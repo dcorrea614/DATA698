@@ -1,0 +1,598 @@
+---
+title: "Research Project"
+author: "Diego Correa"
+date: "2022-10-08"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, include = TRUE)
+# Load required libraries.
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(pROC)
+library(grid)
+library(ggplot2)
+library(corrplot)
+library(readxl)
+library(corrplot)
+library(caret)
+library(stats)
+library(arules)
+library(dendextend)
+library(fpp3)
+library(tidyverse)
+library(readxl)
+library(fable)
+library(naniar)
+library(mice)
+library(randomForest)
+library(caTools)
+library(elasticnet)
+library(AppliedPredictiveModeling)
+library(pdftools)
+library(tm)
+library(quantmod)
+library(xts)
+library(SnowballC)
+library(syuzhet)
+library(wordcloud)
+```
+
+## R Markdown
+
+NY & US Hate Crime datasets
+
+```{r}
+ny_hate_crime_raw <-read_csv("C:\\Users\\Diego Correa\\Dropbox\\MSDS\\DATA698\\NYPD_Hate_Crimes.csv", show_col_types =  FALSE)
+
+```
+
+
+donald trump tweets Jan 2019 - Jan 2021
+
+```{r}
+tweets_raw <- read_csv("C:\\Users\\Diego Correa\\Dropbox\\MSDS\\DATA698\\realDonaldTrump_in_office.csv")
+```
+
+Clean Up Tweets
+```{r}
+tweets_raw <- tweets_raw %>%
+  mutate(tweet_text = str_replace_all(tweets_raw$`Tweet Text`, "@\\w*", "")) %>%
+  mutate(tweet_text = str_replace_all(tweet_text, "http\\S*", "")) %>%
+  mutate(tweet_text = str_replace_all(tweet_text, "[:punct:]", "")) %>%
+  mutate(tweet_text = str_replace_all(tweet_text, "[:digit:]", "")) %>%
+  mutate(tweet_text = tolower(tweet_text)) %>%
+  mutate(date = as_date(tweets_raw$Time)) %>%
+  filter(date >= as_date('2019-01-01'))
+
+tweets_raw
+```
+
+Corpus
+
+
+```{r}
+#Corpus
+text <- tweets_raw$tweet_text
+text_doc <- Corpus(VectorSource(text))
+
+#clean up
+text_doc <- tm_map(text_doc, removeWords, stopwords('english'))
+
+#stem
+text_doc <- tm_map(text_doc, stemDocument)
+
+```
+
+Word Cloud
+
+
+```{r}
+text_matrix <- TermDocumentMatrix(text_doc)
+t_mat <- as.matrix(text_matrix)
+
+t_v <- sort(rowSums(t_mat), decreasing = TRUE)
+t_df <- data.frame(word = names(t_v), freq = t_v)
+```
+
+
+```{r}
+set.seed(123)
+wordcloud(words = t_df$word, freq = t_df$freq, min.freq = 5,
+          max.words=100, random.order=FALSE, rot.per=0.40, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+
+```{r}
+# text_score <- get_sentiment(text, method="syuzhet")
+# 
+# # see summary statistics of the vector
+# summary(text_score)
+
+text_score <- get_nrc_sentiment(text)
+```
+
+```{r}
+barplot(
+  sort(colSums(prop.table(text_score[, 1:8]))), 
+  horiz = TRUE, 
+  cex.names = 0.7, 
+  las = 1, 
+  main = "Emotions in Trump Tweets Jan 2019 - Jan 2021", xlab="Percentage"
+  )
+```
+
+
+```{r}
+text_score <- (text_score[, 9]*-1) + text_score[, 10]
+```
+
+
+
+
+
+
+
+
+
+```{r}
+tweets_raw$sentiment_score <- text_score
+
+tweets <- tweets_raw %>% 
+  group_by(date) %>%
+  summarise(trump_tweets = n(), .groups='drop',
+            sentiment_score = sum(sentiment_score)) %>%
+  mutate(sentiment_score = rollmean(sentiment_score, 7,fill = NA)) %>%
+  fill(sentiment_score, .direction = 'up')
+  
+
+ggplot(tweets, aes(x = date, y=sentiment_score)) +
+  geom_line() +
+  labs(title = 'Rolling 7 Day Mean NRC Sentiment Score of Trump Tweets',
+       subtitle = 'Jan 2019 - Jan 2021')
+```
+
+```{r}
+# temp
+date_temp <- data.frame()
+
+files <- list.files(pattern = "pdf$")
+
+for (i in 1:length(files)){
+  
+  txt <- pdf_text(files[i])
+  
+  rows<-scan(textConnection(txt), what="character",
+             sep = "\n")
+  date<-c()
+  temp<-c()
+  
+  for (j in 6:length(rows)){
+    row = unlist(strsplit(rows[j]," \\s+ "))
+    if (!is.na(as.numeric(row[5]))){
+       date <- c(date, row[2])
+       temp<- c(temp, as.numeric(row[5]))
+    }
+    else{
+       break
+    }
+  }
+  
+  date_temp <- rbind(date_temp, data.frame(date,temp))
+}
+
+temp <- date_temp %>%
+  mutate(date = as_date(date_temp$date)) %>%
+  arrange(mdy(date_temp$date))
+
+head(temp)
+```
+
+shelter
+
+```{r}
+shelter <- read_csv("C:\\Users\\Diego Correa\\Dropbox\\MSDS\\DATA698\\DHS_Daily_Report.csv",show_col_types = FALSE)
+shelter <- shelter %>%
+  rename(date = `Date of Census`, total_in_shelter = `Total Individuals in Shelter`) %>%
+  mutate(date = mdy(date), 
+         log_total_in_shelter = log(total_in_shelter)) %>%
+  select(date, log_total_in_shelter) %>%
+  filter(date >= '2019-01-01')
+
+head(shelter)
+```
+
+
+monthly unemployment
+
+```{r}
+unemployment <- read_excel("C:\\Users\\Diego Correa\\Dropbox\\MSDS\\DATA698\\nyclfsa.xlsx", sheet = 'Data', skip = 2) %>%
+  filter(YEAR >= '2019-01-01') %>%
+  rename(date = YEAR,
+         unemp_rate = `Unemp Rate`) %>%
+  mutate(date = as_date(date),
+          unemp_rate = as.numeric(unemp_rate)) %>%
+  select(date, unemp_rate)
+
+head(unemployment)
+```
+
+
+S&P500
+
+```{r}
+sdate <- as.Date('2019-01-01')
+edate <- as.Date('2021-01-08')
+ 
+# Samsung Electronics (005930), Naver (035420)
+sp_stock=getSymbols('^GSPC',from=sdate,to=edate,auto.assign = F)
+
+ 
+# Typically use previous value for NA
+no.na <- which(is.na(sp_stock[,6]))      # no for NA
+sp_stock[no.na,6] <- sp_stock[no.na-1,6]
+ 
+ 
+# Only stock price
+sp_price <- sp_stock[,6]
+
+sp_price <- sp_price %>% 
+  as.data.frame() %>% 
+  rownames_to_column('date') %>%
+  mutate(log_GSPC = log(GSPC.Adjusted),
+         date = as_date(date)) %>%
+  select(date, log_GSPC)
+
+head(sp_price)
+```
+
+NY Hate Crime
+
+```{r}
+ny_hate_crime_count <- ny_hate_crime_raw %>%
+  mutate(date = mdy(`Record Create Date`)) %>%
+  group_by(date) %>%
+  summarise(hate_crime_count = n(), .groups = 'drop')
+
+head(ny_hate_crime_count)
+```
+
+Dates
+
+```{r}
+dates <- data.frame(rep(
+  seq(as.Date('2019-01-01'), as.Date('2021-01-08'), by = 'days')))
+
+colnames(dates) <- 'date'
+dates <- dates %>%
+  mutate(month = as.integer(format(as.Date(dates$date,format="%Y-%m-%d"), format = "%m")),
+         day = as.integer(format(as.Date(dates$date,format="%Y-%m-%d"), format = "%d")),
+         year = as.integer(format(as.Date(dates$date,format="%Y-%m-%d"), format = "%Y")))
+```
+
+Joining
+
+```{r}
+df <- dates %>% 
+      left_join(tweets) %>% 
+      left_join(temp) %>% 
+      left_join(shelter) %>% 
+      left_join(ny_hate_crime_count) %>% 
+      left_join(sp_price) %>%
+      left_join(unemployment)
+
+df <- df %>%
+  fill(log_GSPC, log_total_in_shelter, unemp_rate,.direction = 'downup') %>%
+  mutate(hate_crime_count = ifelse(is.na(hate_crime_count),0,hate_crime_count),
+         trump_tweets = ifelse(is.na(trump_tweets),0,trump_tweets),
+         sentiment_score = ifelse(is.na(sentiment_score),0,sentiment_score),)
+  
+head(df)
+```
+Correlation
+
+```{r}
+corrMatrix <- round(cor(df[2:11]),4) %>% replace(is.na(.),0)
+
+corrMatrix %>% corrplot(., method = "color", outline = T, addgrid.col = "darkgray", order="hclust", addrect = 4, rect.col = "black", rect.lwd = 5,cl.pos = "b", tl.col = "indianred4", tl.cex = 0.65, cl.cex = 0.7, addCoef.col = "white", number.digits = 1, number.cex = 0.7, col = colorRampPalette(c("darkred","white","dodgerblue4"))(100))
+```
+Distribution
+
+```{r}
+df[5:11]
+data_long <- df[5:11] %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(df[5:11])) %>% 
+  as.data.frame()
+
+ggplot(data_long, aes(x = value)) +    # Draw histogram & density
+  geom_histogram(aes(y = ..density..)) + 
+  geom_density(col = "blue", size = 1) + 
+  facet_wrap(~ name, scales = "free") +
+  labs(title = 'Distribution of Features',
+       subtitle = 'Jan 2019 - Jan 2021')
+
+```
+
+
+Unsupervised Modeling
+
+```{r}
+df <- df[2:11]
+
+wss <- 0
+
+for (i in 1:15) {
+  km.out <- kmeans(df, centers = i, nstart = 20)
+  # Save total within sum of squares to wss variable
+  wss[i] <- km.out$tot.withinss
+}
+
+
+plot(1:15, wss, type = "b",
+     xlab = "Number of Clusters",
+     ylab = "Within groups sum of squares")
+
+```
+
+
+
+```{r}
+km <- kmeans(df, centers = 3)
+df$cluster <- as.character(km$cluster)
+
+ggplot() +
+  geom_point(df, 
+             mapping = aes(x = hate_crime_count, 
+                                  y = trump_tweets, 
+                                  colour = cluster)) +
+  geom_point(mapping = aes_string(x = km$centers[, "hate_crime_count"], 
+                                  y = km$centers[, "trump_tweets"]),
+                                  color = "red", size = 3) +
+  geom_text(mapping = aes_string(x = km$centers[, "hate_crime_count"], 
+                                  y = km$centers[, "trump_tweets"],
+                                 label = 1:3),
+                                  color = "black", size = 3) +
+  labs(title = "KMeans Clustering",
+       subtitle = "Hate Crime Count by Number of Tweets",
+       x = "Hate Crime Count",
+       y = "Number of Tweets")
+```
+
+
+```{r}
+
+ggplot() +
+  geom_point(df, mapping = aes(x = hate_crime_count, 
+                                  y = sentiment_score, 
+                                  colour = cluster)) +
+  geom_point(mapping = aes_string(x = km$centers[, "hate_crime_count"], 
+                                  y = km$centers[, "sentiment_score"]),
+                                  color = "red", size = 3) +
+  geom_text(mapping = aes_string(x = km$centers[, "hate_crime_count"], 
+                                  y = km$centers[, "sentiment_score"],
+                                 label = 1:3),
+                                  color = "black", size = 4) +
+  labs(title = "KMeans Clustering",
+       subtitle = "Hate Crime Count bySentiment Score",
+       x = "Hate Crime Count",
+       y = "Sentiment Score")
+```
+
+PCA
+
+```{r}
+df <- df[-11]
+
+pr.df <- prcomp(df, scale = F, center = T)
+summary(pr.df)
+
+```
+
+
+https://stackoverflow.com/questions/6578355/plotting-pca-biplot-with-ggplot2
+
+```{r}
+library(devtools)
+install_github("vqv/ggbiplot")
+library(ggbiplot)
+
+ggbiplot(pr.df, labels =  rownames(df), labels.size = 1, varname.size = 3) +
+  labs(title = 'PCA Plot',
+       subtitle = 'Jan 2019 - Jan 2021')
+
+detach("package:ggbiplot", unload=TRUE) 
+detach("package:plyr", unload=TRUE) 
+```
+
+Modeling
+
+
+```{r}
+set.seed(123)
+sample <- sample.split(df$hate_crime_count, SplitRatio = 0.75)
+train <- subset(df, sample == TRUE)
+train <- model.matrix( ~ .-1, train)
+
+test <- subset(df, sample == FALSE)
+test <- model.matrix( ~ .-1, test)
+
+y_train <- train[,'hate_crime_count']
+y_test <- test[,'hate_crime_count']
+
+X_train <- train[, !(colnames(train) == 'hate_crime_count')]
+X_test <- test[, !(colnames(test) == 'hate_crime_count')]
+
+```
+
+
+```{r}
+enetGrid <- expand.grid(.lambda = c(0,0.01,0.1),
+            .fraction = seq(0.05,1,length = 20))
+
+set.seed(213)
+enetTune <- train(X_train, y_train,
+                  method = 'enet',
+                  preProc = c('center','scale'),
+                  tuneGrid = enetGrid,
+                  trControl = trainControl(method = 'cv')
+                  )
+enetTune
+```
+
+
+
+```{r}
+varimp <- varImp(enetTune)
+
+varimp$importance %>%
+  arrange(desc(Overall))
+```
+
+
+
+
+```{r}
+rfmodel <- train(X_train, y_train,
+                 method = 'rf',
+                 preProc = c('center','scale'),
+                 trControl = trainControl(method = 'cv'))
+
+rfmodel
+```
+
+
+```{r}
+varimp <- varImp(rfmodel)
+
+varimp$importance %>%
+  arrange(desc(Overall))
+```
+
+
+```{r}
+nnetGrid <- expand.grid(.decay = c(0,0.01,.1),
+                        .size = c(1:10),
+                        .bag = FALSE)
+
+nnetFit <- train(X_train, y_train,
+                  method = 'avNNet',
+                  preProc = c('center','scale'),
+                  tuneGrid = nnetGrid,
+                  linout = TRUE,
+                  trace = FALSE,
+                  MaxNWts = 10 * (ncol(X_train) + 1 + 10 + 1),
+                  maxit = 100
+  
+)
+nnetFit
+```
+
+
+```{r}
+varimp <- varImp(nnetFit)
+
+varimp$importance %>%
+  arrange(desc(Overall))
+```
+
+
+
+```{r}
+df_tsibble <- ny_hate_crime_raw %>%
+  mutate(date = yearweek(as.Date(`Record Create Date`,'%m/%d/%Y'))) %>%
+  group_by(date) %>%
+  summarise(hate_crime_count=n(),.groups='drop') %>%
+  select(date, hate_crime_count)
+
+
+df_tsibble <- df_tsibble %>%
+  as_tsibble(index=date) %>%
+  fill_gaps(hate_crime_count = mean(hate_crime_count), .full = TRUE)
+
+df_tsibble
+```
+
+
+```{r}
+df_tsibble %>% 
+  gg_tsdisplay()
+```
+
+
+```{r}
+lambda <- df_tsibble %>%
+  fabletools::features(hate_crime_count, features = guerrero) %>%
+  pull(lambda_guerrero)
+
+ny_ts <- df_tsibble %>%
+  mutate(hate_crime_count = box_cox(hate_crime_count,lambda))
+```
+
+
+
+```{r}
+ny_train <- ny_ts %>%
+  filter_index(.~'2021-12-31')
+
+ny_fit <- ny_train %>%
+  model(
+    ETS = ETS(hate_crime_count),
+    ARIMA = ARIMA(hate_crime_count),
+    Stochastic = ARIMA(hate_crime_count ~ pdq(d=1) ),
+    NNET = NNETAR(hate_crime_count)
+  ) 
+
+ny_fc <- ny_fit %>% forecast(h = 24)
+
+ny_fc %>%
+  autoplot(ny_train, level = NULL) + 
+  autolayer(
+    filter_index(ny_ts, '2022-01-01' ~ .),
+    color = 'black'
+  ) +
+  labs(
+    title = 'Forecasts for NY Hate Crime Incidents'
+  ) +
+  guides(color = guide_legend(title = 'Forecast'))
+```
+
+
+
+
+
+```{r}
+accuracy(ny_fc, ny_ts)
+```
+
+```{r}
+ny_fit %>%
+  select(Stochastic) %>%
+  augment() %>%
+  fabletools::features(.innov, box_pierce, lag = 24, dof = 0)
+```
+
+```{r}
+ny_fit %>%
+  select(Stochastic) %>%
+  gg_tsresiduals()
+```
+
+
+
+```{r}
+ny_fit <- ny_ts %>%
+  model(ARIMA(hate_crime_count ~ pdq(d=1) ))
+
+ny_fc <- ny_fit %>% forecast(h = 12)
+
+ny_fc %>%
+  autoplot() + 
+  autolayer(ny_ts) +
+  labs(title = 'NYC Hate Crime Incident Forecast',
+       subtitle = 'Stochastic Model')
+```
+
+
